@@ -1,0 +1,24 @@
+# python
+__pycache__/*
+.mypy_cache/*
+
+*.py[cod]
+*.egg
+*.egg-info
+dist
+build
+
+# vim
+*.sw[op]
+
+# unitest/cov
+*.tox
+*.coverage
+
+# C extension
+*.so
+*.out
+*.o
+
+# log
+*.log
