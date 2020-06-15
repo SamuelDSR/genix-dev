@@ -12,7 +12,7 @@ class GameState(object, metaclass=Singleton):
         self.game_grid = []
         self.game_width = sys.maxsize
         self.game_height = sys.maxsize
-        self.game_scale = 0.4
+        self.game_scale = 0.8
 
         self.world_width = 500
         self.world_height = 500
@@ -41,9 +41,6 @@ class GameState(object, metaclass=Singleton):
         delta_x, delta_y = self.active_player.X - grid_x, self.active_player.Y - grid_y
         grid_x, grid_y = x - delta_x, y - delta_y
         self.set_game_grid(grid_x, grid_y, value)
-
-    def get_terrain_size(self):
-        return int(self.world_ratio * self.world_width * self.world_height)
 
     def render_map(self, other_aoi_player):
         #  global GameGrid, ActivePlayer, WorldGrid, GameHeight, GameWidth
