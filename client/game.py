@@ -1,27 +1,25 @@
-import os
+import curses
 import random
 import sys
 import time
-import curses
-import itertools
 
+from event import init_listener
+from logic import update_state
 from player import Player
 from state import GameState
-from util import get_terminal_size, init_logger, generate_random_grid
-from cmd import KeyboardHandler
-from eventhandler import get_keyboard_listener
+from util import generate_random_grid, init_logger
 
 gs = GameState.get_instance()
-handler = KeyboardHandler.get_instance()
 
 
 def init_world():
-    coords, terrain_type = generate_random_grid(gs.world_width, gs.world_height,
-                                                gs.world_ratio, 80, range(1, 10))
+    coords, terrain_type = generate_random_grid(gs.world_width,
+                                                gs.world_height,
+                                                gs.world_ratio, 80,
+                                                range(1, 10))
     for article, t in zip(coords, terrain_type):
         for x, y in article:
             gs.set_world(x, y, t)
-    #  print(gs.world_grid)
 
 
 def init_player():
@@ -39,33 +37,14 @@ def init_player():
                          gs))
 
 
-def init_listener():
-    listener = get_keyboard_listener()
-    listener.start()
-
-
-def init():
-    init_logger()
-    init_world()
-    init_player()
-    init_listener()
-
-
-def update_state():
-    handler.execute()
-
-
-def run():
+def init_view_device():
     stdscr = curses.initscr()
     curses.noecho()
     curses.cbreak()
-    
-    #  os.system("clear")
-    init()
-    while not gs.is_finished:
-        update_state()
-        render(stdscr)
-        time.sleep(1/12)
+    return stdscr
+
+
+def stop_view_device():
     curses.nocbreak()
     curses.echo()
     curses.endwin()
@@ -97,6 +76,21 @@ def render(stdscr):
     stdscr.refresh()
 
 
+def run():
+    # initialize game
+    init_logger()
+    init_world()
+    init_player()
+    init_listener()
+    stdscr = init_view_device()
+
+    # main loop
+    while not gs.is_finished:
+        update_state()
+        render(stdscr)
+        time.sleep(1 / 12)
+
+
 if __name__ == '__main__':
     try:
         run()
@@ -105,6 +99,4 @@ if __name__ == '__main__':
         print(sys.exec_info())
         print("failed")
     finally:
-        curses.nocbreak()
-        curses.echo()
-        curses.endwin()
+        stop_view_device()
