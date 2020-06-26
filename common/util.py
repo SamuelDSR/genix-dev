@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import shutil
+import sys
 import random
 import itertools
 import time
+import functools
+import traceback
 
 from loguru import logger
+from pynput.keyboard import Key, KeyCode
 
 
 class Singleton(type):
@@ -18,6 +22,70 @@ class Singleton(type):
         return cls._instances[cls]
 
 
+def key_repr(key):
+    if isinstance(key, Key):
+        return key.name
+    elif isinstance(key, KeyCode):
+        return key.char
+    else:
+        logger.warning(f"Unknown key pressed {key}")
+        return ""
+
+
+def log_exception(func):
+    @functools.wraps(func)
+    def _wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(e)
+            traceback.print_exc()
+            raise e
+
+    return _wrapper
+
+
+def async_log_exception(func):
+    @functools.wraps(func)
+    async def _wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            logger.error(e)
+            traceback.print_exc()
+            raise e
+
+    return _wrapper
+
+
+def guard_exception(default_val):
+    def decorator(func):
+        @functools.wraps(func)
+        def _wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except:
+                return default_val
+
+        return _wrapper
+
+    return decorator
+
+
+def async_guard_exception(default_val):
+    def decorator(func):
+        @functools.wraps(func)
+        async def _wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except:
+                return default_val
+
+        return _wrapper
+
+    return decorator
+
+
 def get_terminal_size():
     size = shutil.get_terminal_size()
     return size.columns, size.lines
@@ -26,15 +94,14 @@ def get_terminal_size():
 def translate_2to1_util(i, j, grid_w, grid_h):
     if i >= 0 and i < grid_h and j >= 0 and j < grid_w:
         return i * grid_w + j
-    raise ValueError(
-        f"2D coords ({i}, {j}) out of ({grid_w}, {grid_h}) boundry")
+    return -1
+    #  raise ValueError(
+        #  f"2D coords ({i}, {j}) out of ({grid_w}, {grid_h}) boundry")
 
 
-def init_logger():
+def init_logger(log_path):
     logger.remove()
-    logger.add("genix-client.log",
-               format="{time} {level} {message}",
-               level="INFO")
+    logger.add(log_path, format="{time} {level} {message}", level="INFO")
 
 
 def generate_random_grid(width, height, ratio, maxsize, art_props):
@@ -44,14 +111,14 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
     article_props = []
     article_demand_sizes = []
 
-    max_capacity = int(width*height*ratio)
+    max_capacity = int(width * height * ratio)
     occupied_points = set()
 
     def _random_until_satisfied(max_tries):
         i = 0
         while i <= max_tries:
-            x = random.randint(0, width-1)
-            y = random.randint(0, height-1)
+            x = random.randint(0, width - 1)
+            y = random.randint(0, height - 1)
             if (x, y) not in occupied_points:
                 return (x, y)
             i += 1
@@ -59,18 +126,17 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
     def _inside_grid(x, y):
         return x >= 0 and x < width and y >= 0 and y < height
 
-
     def _shape_constraint(x, y, min_x, max_x, min_y, max_y, max_area):
         _min_x = min(x, min_x)
         _max_x = max(x, max_x)
         _min_y = min(y, min_y)
         _max_y = max(y, max_y)
-        if (_max_x - _min_x)*(_max_y - _min_y) <= max_area:
+        if (_max_x - _min_x) * (_max_y - _min_y) <= max_area:
             return True, _min_x, _max_x, _min_y, _max_y
         return False, min_x, max_x, min_y, max_y
 
-
-    GROW_DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    GROW_DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (1, -1), (-1, 1),
+                 (-1, -1)]
     #  GROW_DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1)]
 
     while max_capacity > 0:
@@ -83,7 +149,7 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
 
         # prevent single grow at arbitary shape
         # the are of min rect that contains the shape must not exceed this art_boundry
-        art_boundry = art_size*4
+        art_boundry = art_size * 4
 
         # create one connected article
         art = []
@@ -95,12 +161,12 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
         art_tries = 0
         while len(art) < art_size:
             art_tries += 1
-            if art_tries > art_size+1:
+            if art_tries > art_size + 1:
                 break
 
             if len(art) == 0:
                 # try at least 2*current capacity
-                p = _random_until_satisfied(max_capacity*2)
+                p = _random_until_satisfied(max_capacity * 2)
                 if p:
                     occupied_points.add(p)
                     art.append(p)
@@ -113,17 +179,19 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
                 random.shuffle(GROW_DIRS)
                 for delta in itertools.cycle(GROW_DIRS):
                     tries += 1
-                    if tries > len(art)*2 + 8:
-                    #  if tries > 10:
+                    if tries > len(art) * 2 + 8:
+                        #  if tries > 10:
                         break
 
                     extended_p = random.choice(art)
                     new_x = extended_p[0] + delta[0]
                     new_y = extended_p[1] + delta[1]
                     is_constrained, art_min_x, art_max_x, art_min_y, art_max_y = _shape_constraint(
-                        new_x, new_y, art_min_x, art_max_x, art_min_y, art_max_y, art_boundry
-                    )
-                    if _inside_grid(new_x, new_y) and ((new_x, new_y) not in occupied_points) and is_constrained:
+                        new_x, new_y, art_min_x, art_max_x, art_min_y,
+                        art_max_y, art_boundry)
+                    if _inside_grid(new_x, new_y) and (
+                        (new_x,
+                         new_y) not in occupied_points) and is_constrained:
                         occupied_points.add((new_x, new_y))
                         old_art_size = len(art)
                         art.append((new_x, new_y))
@@ -134,3 +202,7 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
             max_capacity -= len(art)
 
     return articles, article_props
+
+
+if __name__ == '__main__':
+    print(generate_random_grid(10, 10, 0.1, 5, range(10)))
