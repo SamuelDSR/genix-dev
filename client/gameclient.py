@@ -4,7 +4,7 @@
 import asyncio
 import pickle
 import time
-from queue import Empty, Queue
+from queue import Queue
 from threading import Lock, Thread
 
 import stdiomask
@@ -14,10 +14,13 @@ from pynput.keyboard import Listener
 
 from genix.client.render import ConsoleRender, NcursesDevice
 from genix.client.state import GameState
-from genix.common import Singleton, key_repr, init_logger
+from genix.common.entity import NetFrame
+from genix.common.util import (Singleton, await_with_timeout, init_logger,
+                               key_repr, popall)
 
+ALL_VALID_KEYS = set(
+    ["ctrl", "ctrl-r", "up", "left", "right", "down", "j", "k", "l", "h"])
 
-ALL_VALID_KEYS = set(["ctrl", "ctrl-r", "up", "left", "right", "down", "j", "k", "l", "h"])
 
 class GameClient(object, metaclass=Singleton):
     def __init__(self, host, port, hz=24):
@@ -29,7 +32,7 @@ class GameClient(object, metaclass=Singleton):
         self.socket = None
         self.host = host
         self.port = port
-        self.refresh_rate = 1.0 / hz
+        self.tick_time = 1.0 / hz
         self.uri = f"ws://{host}:{port}"
         self.login = False
 
@@ -43,16 +46,6 @@ class GameClient(object, metaclass=Singleton):
     def get_instance(cls):
         return GameClient()
 
-    @classmethod
-    def popall(cls, q):
-        ret = []
-        while True:
-            try:
-                ret.append(q.get_nowait())
-            except Empty:
-                break
-        return ret
-
     def start(self):
         try:
             init_logger("/home/samuel_vita/Documents/genix-dev/client.log")
@@ -60,36 +53,34 @@ class GameClient(object, metaclass=Singleton):
             self.start_input_listener()
             self.start_render()
             self.start_network()
-        except:
+        except Exception:
+            pass
+        finally:
             self.device.stop()
 
     def start_render(self):
         def _target():
             self.device.init()
 
-            # wait for login
-            #  while True:
-                #  time.sleep(0.08)
-                #  with self.lock:
-                    #  if self.login:
-                        #  break
-
             # start rendering game ui
             while True:
                 start = time.time()
 
                 # get latest game state update
-                net_frame = self.net_queue.get()
+                try:
+                    bs = self.net_queue.get()
+                    net_frame = NetFrame.parse_frame(bs)
 
-                self.rs += 1
-                if self.rs % 10 == 0:
-                    logger.info(f"get render frame: {self.rs}")
+                    self.rs += 1
+                    if self.rs % 10 == 0:
+                        logger.info(f"get render frame: {self.rs}")
 
-                #  frame_state = self.state.get_update(net_frame)
-                self.render.render(net_frame)
+                    self.render.render(net_frame)
+                except Exception as e:
+                    print(e)
 
                 end = time.time()
-                delta = self.refresh_rate - (end - start)
+                delta = self.tick_time - (end - start)
                 if delta > 0:
                     #  logger.info(f"Render extra sleep {delta}")
                     time.sleep(delta)
@@ -147,17 +138,23 @@ class GameClient(object, metaclass=Singleton):
                 if flag >= 0:
                     success = True
                 else:
-                    print("==============================================================")
+                    print(
+                        "=============================================================="
+                    )
                     if flag == -1:
                         print("Invalid login requests, please check")
                     elif flag == -2:
                         print("Invalid username/password")
                     elif flag == -3:
-                        print("Password is too short|long (must between 5-15 characters)")
+                        print(
+                            "Password is too short|long (must between 5-15 characters)"
+                        )
                     else:
                         pass
-                    print("==============================================================")
-            except:
+                    print(
+                        "=============================================================="
+                    )
+            except Exception:
                 continue
 
         print("Login|Register succeed")
@@ -168,12 +165,12 @@ class GameClient(object, metaclass=Singleton):
 
     async def handle_connection(self):
         while True:
-            net_frame = pickle.loads(await self.socket.recv())
-            self.net_queue.put(net_frame)
+            bs = await self.socket.recv()
+            self.net_queue.put_nowait(bs)
             self.ns += 1
             if self.ns % 10 == 0:
                 logger.info(f"get net frame: {self.ns}")
-            cmds = GameClient.popall(self.cmd_queue)
+            cmds = popall(self.cmd_queue)
             await self.socket.send(pickle.dumps(cmds))
 
 
@@ -185,4 +182,9 @@ if __name__ == '__main__':
     if len(sys.argv) > 2:
         port = sys.argv[2]
     client = GameClient(host, port, hz=20)
-    client.start()
+    try:
+        client.start()
+    except Exception:
+        pass
+    finally:
+        client.device.stop()

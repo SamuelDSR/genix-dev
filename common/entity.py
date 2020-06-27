@@ -36,21 +36,27 @@ class PlayerState:
 
     @classmethod
     def from_binary(self, bs):
-        return PlayerState.from_dict(
-            pickle.loads(bs)
-        )
+        return PlayerState.from_dict(pickle.loads(bs))
 
+    @classmethod
+    def from_other(self, ps):
+        return PlayerState(x=ps.x, y=ps.y, avatar=ps.avatar)
 
 
 class NetFrame:
     '''Object that reprensets an frame exchange between the client and server
     '''
-
-    def __init__(self, ap_state, op_states, world_map):
-        self.ap_state = ap_state
-        self.op_states = op_states
+    def __init__(self, player_state, other_player_states, world_map):
+        self.player_state = player_state
+        self.other_player_states = other_player_states
         self.world_map = world_map
 
+    @classmethod
+    def build_frame(cls, player_state, other_player_states, world_map):
+        return pickle.dumps(
+            NetFrame(player_state, other_player_states, world_map)
+        )
 
-    def __str__(self):
-        return f"Active Player: {self.ap_state}, WorldMap: {self.world_map}"
+    @classmethod
+    def parse_frame(cls, bs):
+        return pickle.loads(bs)

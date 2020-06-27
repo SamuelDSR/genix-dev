@@ -2,33 +2,21 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-import hashlib
 import pickle
 import time
-from collections import deque
-from queue import Empty, Queue
+from queue import Queue
 from threading import Lock, Thread
 
-import sqlalchemy
 import websockets
-from async_timeout import timeout
-from databases import Database
 from loguru import logger
 
+from genix.common.entity import NetFrame
 from genix.common.util import (Singleton, async_guard_exception,
                                async_log_exception, guard_exception,
-                               log_exception)
-from genix.server.entity import Player, WorldMap
-from genix.common.entity import PlayerState, NetFrame
+                               log_exception, popall, await_with_timeout)
+from genix.server.entity import WorldMap
 from genix.server.handler import UserCmdHandler
-
-metadata = sqlalchemy.MetaData()
-user_table = sqlalchemy.Table(
-    "users", metadata,
-    sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
-    sqlalchemy.Column("username", sqlalchemy.String(length=32)),
-    sqlalchemy.Column("password", sqlalchemy.String(length=32)),
-    sqlalchemy.Column("states", sqlalchemy.BLOB))
+from genix.server.db import GenixDB
 
 
 class GameServer(object, metaclass=Singleton):
@@ -36,22 +24,27 @@ class GameServer(object, metaclass=Singleton):
                  host,
                  port,
                  hz=20,
-                 datapath="/home/samuel_vita/Documents/genix-dev/genix/data"):
+                 datapath="/home/samuel_vita/Documents/genix-dev/genix/data",
+                 debug=True):
         self.host = host
         self.port = port
         self.datapath = datapath
+        self.debug = debug
 
         self.active_users = {}
 
         self.loop = asyncio.get_event_loop()
         self.lock = Lock()
-        self.refresh_rate = 1.0 / hz
+
+        self.tick_time = 1.0 / hz
         self.ticks = 0
 
         self.cmdq = Queue()
         self.cmd_handler = UserCmdHandler()
 
         self.world_map = WorldMap().load(f'{self.datapath}/world_map.pkl')
+
+        self.init_database()
 
     @property
     def world_width(self):
@@ -60,6 +53,28 @@ class GameServer(object, metaclass=Singleton):
     @property
     def world_height(self):
         return self.world_map.height
+
+    def get_player(self, socket):
+        return self.active_users.get(socket, None)
+
+    def add_player(self, socket, player):
+        self.active_users[socket] = player
+
+    async def del_player(self, socket):
+        await self.db.update_user(self.get_player(socket))
+        if socket in self.active_users:
+            del self.active_users[socket]
+
+    def has_player(self, socket):
+        return socket in self.active_users
+
+    @classmethod
+    def get_instance(cls):
+        return GameServer()
+
+    def init_database(self):
+        self.db = GenixDB(f'sqlite:///{self.datapath}/genix.db', self.debug)
+        self.loop.run_until_complete(self.db.connect())
 
     def is_legal(self, x, y, player):
         if x < 0 or x >= self.world_height or\
@@ -73,207 +88,132 @@ class GameServer(object, metaclass=Singleton):
                 return False
         return True
 
-    @classmethod
-    def get_instance(cls):
-        return GameServer()
-
-    @classmethod
-    def popall(cls, q):
-        ret = []
-        while True:
-            try:
-                ret.append(q.get_nowait())
-            except Empty:
-                break
-        return ret
-
-    async def init_database(self):
-        self.db = Database(f'sqlite:///{self.datapath}/genix.db')
-        await self.db.connect()
-
-    async def store_user(self, socket):
-        if socket not in self.active_users:
-            return
-        player = self.active_users[socket]
-        query = user_table.update().where(user_table.c.username == player.username)\
-            .values(states=player.state.to_binary())
-        await self.db.execute(query)
-        del self.active_users[socket]
-        socket.close()
-
-    @async_guard_exception(False)
-    @async_log_exception
-    async def restore_user(self, socket, username, password):
-        query = user_table.select().where((user_table.c.username == username) &
-                                          (user_table.c.password == password))
-        row = await self.db.fetch_one(query=query)
-        if row:
-            ps = PlayerState.from_binary(row["states"])
-            self.active_users[socket] = Player(username, ps, self)
-            logger.info("User login succesfully")
-            return True
-
-    @async_guard_exception(False)
-    @async_log_exception
-    async def register_user(self, socket, username, password):
-        if len(password) < 2 or len(password) > 16:
-            logger.error(f"Invalid password")
-            return False
-
-        query = user_table.insert()
-        values = {
-            "username": username,
-            #  "password": hashlib.md5(password.encode("utf-8")).hexdigest(),
-            "password": password,
-            "states": b""
-        }
-        await self.db.execute(query=query, values=values)
-
-        # inital user state
-        ps = PlayerState.from_dict({
-            "x": 95,
-            "y": 90,
-            "avatar": username[0].upper()
-        })
-        self.active_users[socket] = Player(username, ps, self)
-        logger.info("User register succesfully")
-        return True
-
-    def validate_requests(self, tokens):
-        if not isinstance(tokens, dict):
-            return False
-        demand_keys = ["username", "password", "action"]
-        return all([k in tokens for k in demand_keys])
-
     @async_guard_exception(None)
     @async_log_exception
-    async def user_connect(self, websocket, path):
+    async def player_connect(self, socket, path):
         """
-        Handle user connection, it return a msg which indicates either an success or error
-            msg:
-                -1: invalid login requests
-                -2: invalid login user|password
-                -3: invalid register password
-                0: login success
-                1: register success
+        Handle user connection, it send back a msg to client which
+        indicates either an success or error
+        msg:
+            -1: invalid login|register requests
+            -2: invalid login user|password
+            -3: invalid register password
+            0 : login success
+            1 : register success
         Args:
-            websocket:
+            socket:
             path:
 
         Returns:
-           msg (int):
+            None
         """
-        logger.info("Server: try to Connect")
-
         # parse login requests
-        tokens = pickle.loads(await websocket.recv())
-        if not self.validate_requests(tokens):
-            logger.error(f"Server: unvalid user connect request: {tokens}")
-            return -1
+        tokens = pickle.loads(await socket.recv())
+        try:
+            action, username, password = tokens["action"], tokens[
+                "username"], tokens["password"]
+        except Exception:
+            if self.debug:
+                logger.error(f"Server: unvalid user connect request: {tokens}")
+            await socket.send(pickle.dumps(-1))
+            return
 
-        action, username, password = tokens["action"], tokens[
-            "username"], tokens["password"]
-
-        # deal with login or register
+        player = None
         if action == "login":
-            flag = await self.restore_user(websocket, username, password)
-            return 0 if flag else -2
+            player = await self.db.restore_user(username, password)
+            await socket.send(pickle.dumps(0 if player else -2))
 
-        if action == "register":
-            flag = await self.register_user(websocket, username, password)
-            return 1 if flag else -3
+        elif action == "register":
+            player = await self.db.register_user(username, password, 90, 90)
+            await socket.send(pickle.dumps(1 if player else -3))
+        else:
+            pass
+
+        if player:
+            self.add_player(socket, player)
+            logger.info("Player Connection finished")
 
     @async_guard_exception(None)
-    async def client_step(self, websocket):
-        player = self.active_users[websocket]
-        await websocket.send(pickle.dumps(player.frames.get()))
+    @async_log_exception
+    async def player_step(self, socket):
+        player = self.active_users[socket]
+        await socket.send(player.frames.get())
 
         # recieve client updates
         #  cmds = await self.await_with_timeout(websocket.recv(), 0.05, None)
-        cmds = await websocket.recv()
+        cmds = await socket.recv()
         if cmds is not None:
             cmds = pickle.loads(cmds)
             #  logger.info(f"Server: received cmds from client {cmds}")
-            # add to the global cmds queue
             for c in cmds:
-                self.cmdq.put_nowait((websocket, c))
-        else:
-            logger.info("timeout in receiving user cmds")
+                self.cmdq.put_nowait((socket, c))
 
-        #  player = self.active_users[websocket]
-        #  await websocket.send(pickle.dumps(player.frames.get()))
+    async def player_connection(self, socket, path):
+        while not self.has_player(socket):
+            # if player terminate connection before login, must return
+            if socket.closed:
+                logger.info("woops, socket closed")
+                return
+            await self.player_connect(socket, path)
+
+        if self.debug:
+            logger.info("User connection finished")
+
+        while self.has_player(socket):
+            if socket.closed:
+                await self.del_player(socket)
+                return
+            await self.player_step(socket)
+
+    def process_player_cmds(self, cmds_to_exe):
+        self.cmd_handler.execute(self, cmds_to_exe)
+
+    def update_players(self):
+        for _, player in self.active_users.items():
+            state = player.state
+            other_states = [p.state for p in self.active_users.values() if p != player]
+            map_slice = self.world_map.get_slice(state.x, state.y, 200, 200)
+            player.frames.put_nowait(
+                NetFrame.build_frame(state, other_states, map_slice))
+            #  logger.info(f"Update frame {player.username} succeed")
 
     @guard_exception(None)
     @log_exception
     def lock_step(self):
-        cmd_to_execute = deque(GameServer.popall(self.cmdq))
-        logger.info(f"cmds to execute: {len(cmd_to_execute)}")
-        self.cmd_handler.execute(self, cmd_to_execute)
-        for _, p in self.active_users.items():
-            self.update_client(p)
+        cmds_to_exe = popall(self.cmdq)
 
-    def update_client(self, player):
-        ap = player.state
-        ops = [p.state for p in self.active_users.values() if p != player]
-        #  logger.info(f"number of other players: {len(ops)}")
-        world_map = self.world_map.get_slice(ap.x, ap.y, 400, 400)
-        player.frames.put(NetFrame(ap, ops, world_map))
+        #  if self.debug and len(cmds_to_exe) > 0:
+            #  logger.info(f"Get {len(cmds_to_exe)} to process in lock step")
 
-    async def serve_client(self, websocket, path):
-        flag = -10
-        while flag < 0:
-            flag = await self.user_connect(websocket, path)
-            if websocket.closed:
-                logger.info("User abondon connect")
-                return
-            await websocket.send(pickle.dumps(flag))
+        self.process_player_cmds(cmds_to_exe)
 
-        logger.info("User connection finished")
-
-        while True:
-            if websocket.closed:
-                logger.info("User Deconnect")
-                await self.store_user(websocket)
-                return
-            await self.client_step(websocket)
+        self.update_players()
 
     def start_ticker(self):
         def _target():
-            ts = time.time()
-            #  beginning = ts
-            #  tik = 0
+            server_beginning_ts = time.time()
             while True:
+                tick_beginning = time.time()
+                # step
                 self.lock_step()
+
                 now = time.time()
-                delta = self.refresh_rate - (now - ts)
+                delta = self.tick_time - (now - tick_beginning)
                 if delta > 0:
                     time.sleep(delta)
 
-                with self.lock:
-                    self.tick_ready = True
-                    ts = time.time()
-
-                    #  tik += 1
-                    #  logger.info(f"tick rate: {tik/(ts - beginning)} FPS")
+                self.ticks += 1
+                if self.ticks % 120 == 0:
+                    tick_rate = self.ticks / (time.time() - server_beginning_ts)
+                    logger.info(f"tick rate: {tick_rate} FPS")
 
         self.ticker = Thread(target=_target)
         self.ticker.start()
 
-    def run_co(self, func):
-        self.loop.run_until_complete(func)
-
-    async def await_with_timeout(self, coro, ts, default):
-        try:
-            async with timeout(ts):
-                return await coro
-        except asyncio.TimeoutError:
-            return default
-
     def start(self):
         self.start_ticker()
-        self.run_co(self.init_database())
-        tcp_server = websockets.serve(self.serve_client, self.host, self.port)
-        self.run_co(tcp_server)
+        tcp_server = websockets.serve(self.player_connection, self.host, self.port)
+        self.loop.run_until_complete(tcp_server)
         self.loop.run_forever()
 
 

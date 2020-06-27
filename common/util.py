@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import shutil
-import sys
-import random
-import itertools
-import time
+import asyncio
 import functools
+import itertools
+import random
+import shutil
+import time
 import traceback
+from queue import Empty
 
+from async_timeout import timeout
 from loguru import logger
 from pynput.keyboard import Key, KeyCode
 
@@ -64,7 +66,7 @@ def guard_exception(default_val):
         def _wrapper(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
-            except:
+            except Exception:
                 return default_val
 
         return _wrapper
@@ -78,7 +80,7 @@ def async_guard_exception(default_val):
         async def _wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
-            except:
+            except Exception:
                 return default_val
 
         return _wrapper
@@ -96,7 +98,7 @@ def translate_2to1_util(i, j, grid_w, grid_h):
         return i * grid_w + j
     return -1
     #  raise ValueError(
-        #  f"2D coords ({i}, {j}) out of ({grid_w}, {grid_h}) boundry")
+    #  f"2D coords ({i}, {j}) out of ({grid_w}, {grid_h}) boundry")
 
 
 def init_logger(log_path):
@@ -202,6 +204,24 @@ def generate_random_grid(width, height, ratio, maxsize, art_props):
             max_capacity -= len(art)
 
     return articles, article_props
+
+
+def popall(q):
+    ret = []
+    while True:
+        try:
+            ret.append(q.get_nowait())
+        except Empty:
+            break
+    return ret
+
+
+async def await_with_timeout(coro, ts, default):
+    try:
+        async with timeout(ts):
+            return await coro
+    except asyncio.TimeoutError:
+        return default
 
 
 if __name__ == '__main__':

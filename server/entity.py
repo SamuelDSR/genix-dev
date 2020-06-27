@@ -17,26 +17,7 @@ class Player:
     ):
         self.state = state
         self.username = username
-        self.gs = gs
         self.frames = Queue()
-
-    @property
-    def X(self):
-        return self.state.x
-
-    @X.setter
-    def X(self, value):
-        if self.gs.is_legal(value, self.state.y, self):
-            self.state.x = value
-
-    @property
-    def Y(self):
-        return self.state.y
-
-    @Y.setter
-    def Y(self, value):
-        if self.gs.is_legal(self.state.x, value, self):
-            self.state.y = value
 
 
 class WorldMap:

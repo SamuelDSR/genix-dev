@@ -77,14 +77,14 @@ class ConsoleRender:
 
     def update_aoi(self, frame_state):
         # draw current user
-        ap = frame_state.ap_state
+        ap = frame_state.player_state
         #  logger.info(f"current user pos: {(ap.x, ap.y)}")
         self.set_buffer_rel(ap.x, ap.y, ap.avatar, ap.x, ap.y)
 
         # draw other aoi players
-        op_states = frame_state.op_states
+        other_player_states = frame_state.other_player_states
         #  logger.info(f"current p: {(ap.x, ap.y)}")
-        for op in op_states:
+        for op in other_player_states:
             #  logger.info(f"other p: {(op.x, op.y)}")
             self.set_buffer_rel(op.x, op.y, op.avatar, ap.x, ap.y)
 
@@ -107,9 +107,9 @@ class ConsoleRender:
         self.update_boundry()
         self.update_aoi(frame_state)
 
-    def render(self, state):
+    def render(self, frame_state):
         self.device.reset()
-        self.update_buffer(state)
+        self.update_buffer(frame_state)
         self.device.draw(self.buffer)
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from collections import defaultdict
+from collections import defaultdict, deque
 
 from loguru import logger
 from genix.common.util import Singleton
@@ -10,36 +10,36 @@ class KeyboardUpCmd:
     @classmethod
     def execute(cls, gs, player):
         #  logger.info("Keyboard Up Execute")
-        #  logger.info(f"before: {player.X}")
-        player.X -= 1
-        #  logger.info(f"after: {player.X}")
+        val = player.state.x - 1
+        if gs.is_legal(val, player.state.y, player):
+            player.state.x = val
 
 
 class KeyboardDownCmd:
     @classmethod
     def execute(cls, gs, player):
         #  logger.info("Keyboard Down Execute")
-        #  logger.info(f"before: {player.X}")
-        player.X += 1
-        #  logger.info(f"after: {player.X}")
+        val = player.state.x + 1
+        if gs.is_legal(val, player.state.y, player):
+            player.state.x = val
 
 
 class KeyboardLeftCmd:
     @classmethod
     def execute(cls, gs, player):
         #  logger.info("Keyboard Left Execute")
-        #  logger.info(f"before: {player.Y}")
-        player.Y -= 1
-        #  logger.info(f"after: {player.Y}")
+        val = player.state.y - 1
+        if gs.is_legal(player.state.x, val, player):
+            player.state.y = val
 
 
 class KeyboardRightCmd:
     @classmethod
     def execute(cls, gs, player):
         #  logger.info("Keyboard Right Execute")
-        #  logger.info(f"before: {player.Y}")
-        player.Y += 1
-        #  logger.info(f"after: {player.Y}")
+        val = player.state.y + 1
+        if gs.is_legal(player.state.x, val, player):
+            player.state.y = val
 
 
 VALID_KEY_COMBS = dict([('up', KeyboardUpCmd),
@@ -102,7 +102,9 @@ class UserCmdHandler(object, metaclass=Singleton):
         return player, valid_cmd
 
     def execute(self, gs, user_cmds):
+        user_cmds = deque(user_cmds)
         while len(user_cmds) > 0:
             player, cmd = self.yield_execute_unit(gs, user_cmds)
             if cmd is not None:
+                #  logger.info(f"Cmd to execute is: {cmd}")
                 cmd.execute(gs, player)
